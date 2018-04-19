@@ -8,3 +8,6 @@ build
 
 # swap:
 *.swp
+
+# pycache
+__pycache__/
