@@ -232,13 +232,13 @@ def decoding_graph(features, state, mode, params):
 
     # id => embedding
     # tgt_seq: [batch, max_tgt_length]
-    targets = tf.gather(tgt_embedding, tgt_seq) * (hidden_size ** 0.5)
+    targets = tf.gather(tgt_embedding, tgt_seq) * (hidden_size ** 0.5)  # [N, L, D]
     targets = targets * tf.expand_dims(tgt_mask, -1)
 
     # Preparing encoder and decoder input
     enc_attn_bias = layers.attention.attention_bias(src_mask, "masking")
     dec_attn_bias = layers.attention.attention_bias(tf.shape(targets)[1],
-                                                    "causal")
+                                                    "causal")  # [1, 1, L, L]
     # Shift left
     decoder_input = tf.pad(targets, [[0, 0], [1, 0], [0, 0]])[:, :-1, :]
     decoder_input = layers.attention.add_timing_signal(decoder_input)

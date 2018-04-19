@@ -11,7 +11,7 @@ import os
 import six
 import sys
 
-sys.path.append('/home/guanlin/Workspace/Repos/THUMT-f08b75b/')
+sys.path.append('/home/guanlin/Workspace/Repos/THUMT-dev/')
 from tensorflow.python import debug as tf_debug
 
 import numpy as np
@@ -49,7 +49,9 @@ def parse_args(args=None):
     parser.add_argument("--checkpoint", type=str,
                         help="Path to pre-trained checkpoint")
 
-    # model and configuration
+    # train mode, model and configuration
+    parser.add_argument("--train_mode", type=str, required=True,
+                        help="Training mode of the model [l2r|r2l|coop]")
     parser.add_argument("--model", type=str, required=True,
                         help="Name of the model")
     parser.add_argument("--parameters", type=str, default="",
@@ -65,10 +67,7 @@ def default_parameters():
         record="",
         model="transformer",
         # Model sub-type
-        left2right=True,
-        right2left=False,
-        src_pos_emb=True,
-        tgt_pos_emb=True,
+        is_BPE=False,
         vocab=["", ""],
         # Default training hyper parameters
         num_threads=6,
@@ -176,6 +175,7 @@ def merge_parameters(params1, params2):
 
 
 def override_parameters(params, args):
+    params.train_mode = args.train_mode
     params.model = args.model
     params.input = args.input or params.input
     params.output = args.output or params.output
@@ -287,14 +287,52 @@ def decode_target_ids(inputs, params):
     return decoded
 
 
-def restore_variables(checkpoint):
-    if not checkpoint:
-        return tf.no_op("restore_op")
+def get_restore_and_train_var_list(params):
+    train_var_mask = []
+    restore_var_mask = []
+    if params.left2right and params.right2left:
+        train_var_mask = []
+        restore_var_mask = []
+        raise ValueError("Cooperative decoder is not implemented!")
+    elif params.left2right:
+        train_var_mask = []
+        restore_var_mask = []
+    elif params.right2left:
+        train_var_mask = ["encoder"]
+        restore_var_mask = ["right2left_decoder"]
 
+    trainable_vars = tf.trainable_variables()
+    trainable_vars_masked = []
+    for var in trainable_vars:
+        for mask in train_var_mask:
+            if mask in var.name:
+                trainable_vars_masked.append(var)
+                break
+    trainable_vars_unmasked = []
+    for var in trainable_vars:
+        if var not in trainable_vars_masked:
+            trainable_vars_unmasked.append(var)
+
+    restore_vars = trainable_vars
+    restore_vars_masked = []
+    for var in restore_vars:
+        for mask in restore_var_mask:
+            if mask in var.name:
+                restore_vars_masked.append(var)
+                break
+    restore_vars_unmasked = []
+    for var in restore_vars:
+        if var not in restore_vars_masked:
+            restore_vars_unmasked.append(var)
+
+    return trainable_vars_unmasked, restore_vars_unmasked
+
+
+def restore_all_variables(checkpoint_dir):
     # Load checkpoints
-    tf.logging.info("Loading %s" % checkpoint)
-    var_list = tf.train.list_variables(checkpoint)
-    reader = tf.train.load_checkpoint(checkpoint)
+    tf.logging.info("Loading %s" % checkpoint_dir)
+    var_list = tf.train.list_variables(checkpoint_dir)
+    reader = tf.train.load_checkpoint(checkpoint_dir)
     values = {}
 
     for (name, shape) in var_list:
@@ -311,8 +349,63 @@ def restore_variables(checkpoint):
         if name in values:
             tf.logging.info("Restore %s" % var.name)
             ops.append(tf.assign(var, values[name]))
-
     return tf.group(*ops, name="restore_op")
+
+
+def restore_unmasked_variables(checkpoit_dir, unmask_list):
+    tf.logging.info("Loading %s" % checkpoit_dir)
+    old_var_list = tf.train.list_variables(checkpoit_dir)
+    reader = tf.train.load_checkpoint(checkpoit_dir)
+    values = {}
+
+    old_var_list_unmasked = []
+    for var in old_var_list:
+        for key in unmask_list:
+            if key in var[0]:
+                old_var_list_unmasked.append(var[0])
+                break
+
+    for var_name in old_var_list_unmasked:
+        tensor = reader.get_tensor(var_name)
+        values[var_name] = tensor
+
+    var_list = tf.trainable_variables()
+    ops = []
+    for var in var_list:
+        name = var.name.split(":")[0]
+
+        if name in old_var_list_unmasked:
+            tf.logging.info("Restore %s" % var.name)
+            ops.append(tf.assign(var, values[name]))
+
+    return ops
+
+
+def get_unmasked_vars(unmask_list, trainable_vars):
+    trainable_vars_unmasked = []
+    for var in trainable_vars:
+        for unmask in unmask_list:
+            if unmask in var.name:
+                trainable_vars_unmasked.append(var)
+                break
+    return trainable_vars_unmasked
+
+
+def get_checkpoint_dir(args):
+    base_dir = args.output
+    if not tf.gfile.Exists(base_dir):
+        tf.gfile.MkDir(base_dir)
+    if args.train_mode == "coop":
+        sub_dir = "coop"
+    elif args.train_mode == "l2r":
+        sub_dir = "left2right"
+    elif args.train_mode == "r2l_only":
+        sub_dir = "right2left_only"
+    elif args.train_mode == "r2l":
+        sub_dir = "right2left"
+    else:
+        raise ValueError("Unknown training mode %s!" % args.train_mode)
+    return os.path.join(base_dir, sub_dir)
 
 
 def main(args):
@@ -322,18 +415,20 @@ def main(args):
 
     # Import and override parameters
     # Priorities (low -> high):
-    # default -> saved -> command
+    # train default -> model default -> saved -> command
     params = merge_parameters(params, model_cls.get_parameters())
-    params = import_params(args.output, args.model, params)
-    override_parameters(params, args)
+    # get checkpoint dir
+    checkpoint_dir = get_checkpoint_dir(args)  # e.g. train/left2right
+    # params = import_params(checkpoint_dir, args.model, params)
+    params = override_parameters(params, args)
 
     # Export all parameters and model specific parameters
-    export_params(params.output, "params.json", params)
-    export_params(
-        params.output,
-        "%s.json" % args.model,
-        collect_params(params, model_cls.get_parameters())
-    )
+    # export_params(checkpoint_dir, "params.json", params)
+    # export_params(
+    #     checkpoint_dir,
+    #     "%s.json" % args.model,
+    #     collect_params(params, model_cls.get_parameters())
+    # )
 
     # Build Graph
     with tf.Graph().as_default():
@@ -345,6 +440,7 @@ def main(args):
                 os.path.join(params.record, "*train*"), "train", params
             )
 
+        # Cache features for multiple batch update (versus one batch per update)
         features, init_op = cache.cache_features(features,
                                                  params.update_cycle)
 
@@ -352,7 +448,7 @@ def main(args):
         initializer = get_initializer(params)
         model = model_cls(params)
 
-        # Multi-GPU setting
+        # Multi-GPU setting: build multiple GPU loss
         sharded_losses = parallel.parallel_model(
             model.get_training_func(initializer),
             features,
@@ -362,19 +458,7 @@ def main(args):
 
         # Create global step
         global_step = tf.train.get_or_create_global_step()
-
-        # Print parameters
-        all_weights = {v.name: v for v in tf.trainable_variables()}
-        total_size = 0
-
-        for v_name in sorted(list(all_weights)):
-            v = all_weights[v_name]
-            tf.logging.info("%s\tshape    %s", v.name[:-2].ljust(80),
-                            str(v.shape).ljust(20))
-            v_size = np.prod(np.array(v.shape.as_list())).tolist()
-            total_size += v_size
-        tf.logging.info("Total trainable variables size: %d", total_size)
-
+        # Create learning rate decay strategy
         learning_rate = get_learning_rate_decay(params.learning_rate,
                                                 global_step, params)
         learning_rate = tf.convert_to_tensor(learning_rate, dtype=tf.float32)
@@ -394,8 +478,101 @@ def main(args):
         else:
             raise RuntimeError("Optimizer %s not supported" % params.optimizer)
 
-        loss, ops = optimize.create_train_op(loss, opt, global_step, params)
-        restore_op = restore_variables(args.checkpoint)
+        # Get restore_op and trainable_vars_unmasked through train mode
+
+        # 1. Train left2right model
+        if params.train_mode == 'l2r':
+            # coherence check
+            if params.right2left:
+                raise ValueError("When in l2r TRAIN MODE, params.right2left should be FALSE!")
+            # if there are checkpoint(s) saved, restore from checkpoint
+            if tf.gfile.Exists(os.path.join(checkpoint_dir, "checkpoint")):
+                restore_op = restore_all_variables(checkpoint_dir)
+            # else restore according to model type
+            else:
+                restore_op = tf.no_op("restore_op")
+            trainable_vars_unmasked = tf.trainable_variables()
+        # 2. Train right2left model with encoder weights fixed
+        elif params.train_mode == 'r2l':
+            if params.left2right:
+                raise ValueError("When in r2l TRAIN MODE, params.left2right should be FALSE!")
+            if tf.gfile.Exists(os.path.join(checkpoint_dir, "checkpoint")):
+                restore_op = restore_all_variables(checkpoint_dir)
+            else:
+                checkpoint_dir_prefix = '/'.join(checkpoint_dir.split('/')[:-1])
+                left2right_checkpoint_dir = os.path.join(checkpoint_dir_prefix, 'left2right/eval')
+                restore_encoder_ops = restore_unmasked_variables(
+                    left2right_checkpoint_dir,
+                    ["encoder"]
+                )
+                restore_op = tf.group(*restore_encoder_ops, name="restore_op")
+            trainable_vars_unmasked = get_unmasked_vars(
+                ["right2left_decoder"],
+                tf.trainable_variables()
+            )
+        elif params.train_mode == 'r2l_only':
+            if params.left2right:
+                raise ValueError("When in r2l_only TRAIN MODE, params.left2right should be FALSE!")
+            if tf.gfile.Exists(os.path.join(checkpoint_dir, "checkpoint")):
+                restore_op = restore_all_variables(checkpoint_dir)
+            else:
+                restore_op = tf.no_op("restore_op")
+            trainable_vars_unmasked = tf.trainable_variables()
+        # 3. Cooperatively train l2r and r2l decoder
+        else:
+            if params.train_mode != 'coop':
+                raise ValueError("Unknown TRAIN MODE %s!" % params.train_mode)
+            if not params.left2right or not params.right2left:
+                raise ValueError("When in coop TRAIN MODE, both params.left2right and "
+                                 "params.right2left should be TRUE!")
+            if tf.gfile.Exists(os.path.join(checkpoint_dir, "checkpoint")):
+                restore_op = restore_all_variables(checkpoint_dir)
+            else:
+                checkpoint_dir_prefix = '/'.join(checkpoint_dir.split('/')[:-1])
+                l2r_checkpoint_dir = os.path.join(checkpoint_dir_prefix, "left2right/eval")
+                r2l_checkpoint_dir = os.path.join(checkpoint_dir_prefix, "right2left/eval")
+                restore_encoder_ops = restore_unmasked_variables(
+                    r2l_checkpoint_dir,
+                    ["encoder"]
+                )
+                restore_l2r_decoder_ops = restore_unmasked_variables(
+                    l2r_checkpoint_dir,
+                    ["left2right_decoder"]
+                )
+                restore_r2l_decoder_ops = restore_unmasked_variables(
+                    r2l_checkpoint_dir,
+                    ["right2left_decoder"]
+                )
+                restore_ops = restore_encoder_ops + restore_l2r_decoder_ops + restore_r2l_decoder_ops
+                restore_op = tf.group(*restore_ops, name="restore_op")
+            trainable_vars_unmasked = tf.trainable_variables()
+
+        # Print parameters
+        all_weights = {v.name: v for v in tf.trainable_variables()}
+        total_size = 0
+        unmasked_size = 0
+        print("\nPrint all parameters and their shape!")
+        for v_name in sorted(list(all_weights)):
+            v = all_weights[v_name]
+            tf.logging.info("%s\tshape    %s", v.name[:-2].ljust(80),
+                            str(v.shape).ljust(20))
+            v_size = np.prod(np.array(v.shape.as_list())).tolist()
+            total_size += v_size
+            if v in trainable_vars_unmasked:
+                unmasked_size += v_size
+        tf.logging.info("Total trainable variables size: %d", total_size)
+        tf.logging.info("Unmasked trainable variables size: %d", unmasked_size)
+        print("\nConfirm training with mode ===> %s" % params.train_mode)
+        print("Press ANY KEY to continue...")
+        sys.stdin.readline()
+
+        loss, ops = optimize.create_train_op(
+            loss,
+            opt,
+            trainable_vars_unmasked,
+            global_step,
+            params
+        )
 
         # Validation
         if params.validation and params.references[0]:
@@ -422,10 +599,10 @@ def main(args):
                     "step": global_step,
                     "loss": loss,
                 },
-                every_n_iter=1
+                every_n_iter=50
             ),
             tf.train.CheckpointSaverHook(
-                checkpoint_dir=params.output,
+                checkpoint_dir=checkpoint_dir,
                 save_secs=params.save_checkpoint_secs or None,
                 save_steps=params.save_checkpoint_steps or None,
                 saver=saver
@@ -442,29 +619,19 @@ def main(args):
                     ),
                     lambda: eval_input_fn(eval_inputs, params),
                     lambda x: decode_target_ids(x, params),
-                    params.output,
-                    config,
+                    checkpoint_dir,
+                    params.train_mode == 'r2l' or params.train_mode == 'r2l_only',
+                    params.is_BPE,
+                    config,  # for create a chief session
                     params.keep_top_checkpoint_max,
                     eval_secs=params.eval_secs,
                     eval_steps=params.eval_steps
                 )
             )
 
-        #def restore_fn(step_context):
-        #    step_context.session.run(restore_op)
-
-        #def step_fn(step_context):
-        #    # Bypass hook calls
-        #    step_context.session.run([init_op, ops["zero_op"]])
-        #    for i in range(params.update_cycle):
-        #        step_context.session.run(ops["collect_op"])
-        #    step_context.session.run(ops["scale_op"])
-
-        #    return step_context.run_with_hooks(ops["train_op"])
-
         # Create session, do not use default CheckpointSaverHook
         with tf.train.MonitoredTrainingSession(
-                checkpoint_dir=params.output, hooks=train_hooks,
+                checkpoint_dir=checkpoint_dir, hooks=train_hooks,
                 save_checkpoint_secs=None, config=config) as sess:
             # Restore pre-trained variables
             sess.run(restore_op)
@@ -472,8 +639,6 @@ def main(args):
                 sess._tf_sess().run(ops["zero_op"])
                 for i in range(params.update_cycle):
                     sess._tf_sess().run(ops["collect_op"])
-                # print("Wrap with debugger!")
-                # sess = tf_debug.LocalCLIDebugWrapperSession(sess)
                 sess.run(ops["train_op"])
 
 

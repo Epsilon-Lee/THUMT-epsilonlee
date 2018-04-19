@@ -130,7 +130,9 @@ def _add_to_record(records, record, max_to_keep):
     return added, removed, records
 
 
-def _evaluate(eval_fn, input_fn, decode_fn, path, config):
+def _evaluate(eval_fn, input_fn, decode_fn, path,
+              save_path, is_Reverse, is_BPE, global_step, config):
+    """Return the real BLEU (BPE restored), input_fn should contain word-level ref."""
     graph = tf.Graph()
     with graph.as_default():
         features = input_fn()
@@ -171,6 +173,33 @@ def _evaluate(eval_fn, input_fn, decode_fn, path, config):
         decoded_refs = [decode_fn(refs) for refs in all_refs]
         decoded_refs = [list(x) for x in zip(*decoded_refs)]
 
+        norm_filepath = save_path + '-' + str(global_step) + '.pred.norm'
+        if is_Reverse:
+            for sent in decoded_symbols:
+                sent.reverse()
+        if is_BPE:
+            # restore from BPE
+            bpe_filepath = save_path + '-' + str(global_step) + '.pred.bpe'
+            with open(bpe_filepath, 'w') as f:
+                for sent in decoded_symbols:
+                    sent = ' '.join(decoded_symbols) + '\n'
+                    f.write(sent)
+            cmd = "sed -r 's/(@@ )|(@@ ?$)//g' < %s > %s" % (bpe_filepath, norm_filepath)
+            os.system(cmd)
+        else:
+            tf.logging.info("Saving predictions to %s" % norm_filepath)
+            tf.logging.info("With Reverse=%d, BPE=%d" % (is_Reverse, is_BPE))
+            with open(norm_filepath, 'w') as f:
+                for sent in decoded_symbols:
+                    sent = ' '.join(sent) + '\n'
+                    f.write(sent)
+
+        decoded_symbols = []
+        with open(norm_filepath, 'r') as f:
+            for sent in f:
+                words = sent.strip().split()
+                decoded_symbols.append(words)
+
         return bleu.bleu(decoded_symbols, decoded_refs)
 
 
@@ -180,7 +209,7 @@ class EvaluationHook(tf.train.SessionRunHook):
     """
 
     def __init__(self, eval_fn, eval_input_fn, eval_decode_fn, base_dir,
-                 session_config, max_to_keep=5, eval_secs=None,
+                 is_Reverse, is_BPE, session_config, max_to_keep=5, eval_secs=None,
                  eval_steps=None, metric="BLEU"):
         """ Initializes a `EvaluationHook`.
         :param eval_fn: A function with signature (feature)
@@ -200,7 +229,9 @@ class EvaluationHook(tf.train.SessionRunHook):
         if metric != "BLEU":
             raise ValueError("Currently, EvaluationHook only support BLEU")
 
-        self._base_dir = base_dir.rstrip("/")
+        self._base_dir = base_dir.rstrip("/")  # checkpoint_dir
+        self._is_Reverse = is_Reverse
+        self._is_BPE = is_BPE
         self._session_config = session_config
         self._save_path = os.path.join(base_dir, "eval")
         self._record_name = os.path.join(self._save_path, "record")
@@ -251,7 +282,7 @@ class EvaluationHook(tf.train.SessionRunHook):
             if self._timer.should_trigger_for_step(global_step):
                 self._timer.update_last_triggered_step(global_step)
                 # Save model
-                save_path = os.path.join(self._base_dir, "model.ckpt")
+                save_path = os.path.join(self._base_dir, "model.ckpt")  # prefix "train/left2right/model.ckpt"
                 saver = _get_saver()
                 tf.logging.info("Saving checkpoints for %d into %s." %
                                 (global_step, save_path))
@@ -260,10 +291,17 @@ class EvaluationHook(tf.train.SessionRunHook):
                            global_step=global_step)
                 # Do validation here
                 tf.logging.info("Validating model at step %d" % global_step)
-                score = _evaluate(self._eval_fn, self._eval_input_fn,
-                                  self._eval_decode_fn,
-                                  self._base_dir,
-                                  self._session_config)
+                score = _evaluate(
+                    self._eval_fn,
+                    self._eval_input_fn,
+                    self._eval_decode_fn,
+                    self._base_dir,
+                    save_path,  # save path prefix
+                    self._is_Reverse,
+                    self._is_BPE,
+                    global_step,
+                    self._session_config
+                )
                 tf.logging.info("%s at step %d: %f" %
                                 (self._metric, global_step, score))
 
@@ -312,11 +350,18 @@ class EvaluationHook(tf.train.SessionRunHook):
 
         if last_step != self._timer.last_triggered_step():
             global_step = last_step
+            save_path = os.path.join(self._base_dir, "model.ckpt")
             tf.logging.info("Validating model at step %d" % global_step)
-            score = _evaluate(self._eval_fn, self._eval_input_fn,
-                              self._eval_decode_fn,
-                              self._base_dir,
-                              self._session_config)
+            score = _evaluate(
+                self._eval_fn,
+                self._eval_input_fn,
+                self._eval_decode_fn,
+                self._base_dir,
+                save_path,  # save path prefix
+                self._is_BPE,
+                global_step,
+                self._session_config
+            )
             tf.logging.info("%s at step %d: %f" %
                             (self._metric, global_step, score))
 

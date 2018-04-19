@@ -98,10 +98,13 @@ def _scale_variables(variables, scale):
     return tf.group(*ops, name="scale_variables")
 
 
-def create_train_op(loss, optimizer, global_step, params):
+def create_train_op(loss, optimizer, var_list, global_step, params):
     with tf.name_scope("create_train_op"):
         grads_and_vars = optimizer.compute_gradients(
-            loss, colocate_gradients_with_ops=True)
+            loss,
+            var_list,
+            colocate_gradients_with_ops=True
+        )
         gradients = [item[0] for item in grads_and_vars]
         variables = [item[1] for item in grads_and_vars]
 
@@ -149,7 +152,7 @@ def create_train_op(loss, optimizer, global_step, params):
                                                   params.clip_grad_norm)
 
         # Update variables
-        grads_and_vars = list(zip(gradients, tf.trainable_variables()))
+        grads_and_vars = list(zip(gradients, var_list))
         train_op = optimizer.apply_gradients(grads_and_vars, global_step)
 
         ops = {

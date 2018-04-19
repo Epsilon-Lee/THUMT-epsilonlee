@@ -25,6 +25,7 @@ def _get_inference_fn(model_fns, features):
             "source_length": features["source_length"],
             # [bos_id, ...] => [..., 0]
             "target": tf.pad(inputs[:, 1:], [[0, 0], [0, 1]]),
+            # "target": tf.pad(inputs[:, :], [[0, 0], [0, 1]]),
             "target_length": tf.fill([tf.shape(inputs)[0]],
                                      tf.shape(inputs)[1])
         }
@@ -202,6 +203,14 @@ def beam_search(func, state, batch_size, beam_size, max_length, alpha,
 
 
 def create_inference_graph(model_fns, features, params):
+    """
+    In-graph beam search.
+
+    :param model_fns: a list of tuple of functions (encoding_fn, decoding_fn)
+    :param features: data input
+    :param params: params
+    :return:
+    """
     if not isinstance(model_fns, (list, tuple)):
         raise ValueError("mode_fns must be a list or tuple")
 
@@ -253,7 +262,7 @@ def create_inference_graph(model_fns, features, params):
     # [batch, beam_size, length] => [batch * beam_size, length]
     features["source_length"] = tf.reshape(features["source_length"],
                                            [shape[0] * shape[1]])
-    decoding_fn = _get_inference_fn(funcs, features)
+    decoding_fn = _get_inference_fn(funcs, features)  # funcs is a list of decoding_fn
     states = nest.map_structure(
         lambda x: utils.tile_to_beam_size(x, beam_size),
         states)

@@ -95,7 +95,7 @@ def get_training_input(filenames, params):
         tgt_dataset = tf.data.TextLineDataset(filenames[1])
 
         dataset = tf.data.Dataset.zip((src_dataset, tgt_dataset))
-        dataset = dataset.shuffle(params.buffer_size)
+        # dataset = dataset.shuffle(params.buffer_size)
         dataset = dataset.repeat()
 
         # Split string
@@ -116,14 +116,14 @@ def get_training_input(filenames, params):
             num_parallel_calls=params.num_threads
         )
 
-        # Append <bos> symbol
-        dataset = dataset.map(
-            lambda src, tgt: (
-                src,
-                tf.concat([[tf.constant(params.bos)], tgt], axis=0)
-            ),
-            num_parallel_calls=params.num_threads
-        )
+        # # Append <bos> symbol
+        # dataset = dataset.map(
+        #     lambda src, tgt: (
+        #         src,
+        #         tf.concat([[tf.constant(params.bos)], tgt], axis=0)
+        #     ),
+        #     num_parallel_calls=params.num_threads
+        # )
 
         # Convert to dictionary
         dataset = dataset.map(
@@ -169,6 +169,13 @@ def get_training_input(filenames, params):
         features["target_length"] = tf.to_int32(features["target_length"])
         features["source_length"] = tf.squeeze(features["source_length"], 1)
         features["target_length"] = tf.squeeze(features["target_length"], 1)
+
+        # # debug
+        # sess = tf.train.MonitoredTrainingSession()
+        # print(sess.run(features["target"]).shape)
+        # print(sess.run(features["target_length"]))
+        # import sys
+        # sys.stdin.readline()
 
         return features
 
@@ -227,7 +234,7 @@ def get_evaluation_input(inputs, params):
         datasets = []
 
         for data in inputs:
-            dataset = tf.data.Dataset.from_tensor_slices(data)
+            dataset = tf.data.Dataset.from_tensor_slices(data)  # data is a list of list of str
             # Split string
             dataset = dataset.map(lambda x: tf.string_split([x]).values,
                                   num_parallel_calls=params.num_threads)

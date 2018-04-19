@@ -103,10 +103,10 @@ def attention_bias(inputs, mode, inf=-1e9, name=None):
             lower_triangle = tf.matrix_band_part(
                 tf.ones([length, length]), -1, 0
             )
-            ret = inf * (1.0 - lower_triangle)
-            return tf.reshape(ret, [1, 1, length, length])
+            ret = inf * (1.0 - lower_triangle)  # L x L
+            return tf.reshape(ret, [1, 1, length, length])  # N x H x [L x L]  ==>
         elif mode == "masking":
-            mask = inputs
+            mask = inputs  # [1, 1, 1, 0, 0] ==>
             ret = (1.0 - mask) * inf
             return tf.expand_dims(tf.expand_dims(ret, 1), 1)
         elif mode == "proximal":
@@ -372,7 +372,7 @@ def multihead_attention(queries, memories, bias, num_heads, key_size,
             k, v = tf.split(combined, [key_size, value_size], axis=-1)
 
         # split heads
-        q = split_heads(q, num_heads)
+        q = split_heads(q, num_heads)  # [N, .., D] => [N, H, .., D]
         k = split_heads(k, num_heads)
         v = split_heads(v, num_heads)
 
