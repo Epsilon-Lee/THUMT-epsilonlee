@@ -314,22 +314,12 @@ def l2r_decoding_graph(features, state, mode, params):
     tgt_seq = features["target"]  # during inference, shape = []
     src_len = features["source_length"]
     tgt_len = features["target_length"]
-
     src_mask = tf.sequence_mask(src_len,
                                 maxlen=tf.shape(features["source"])[1],
                                 dtype=tf.float32)
     tgt_mask = tf.sequence_mask(tgt_len,
                                 maxlen=tf.shape(features["target"])[1],
                                 dtype=tf.float32)
-    # # debug
-    # sess = tf.train.MonitoredTrainingSession()
-    # print(sess.run(tgt_len))
-    # tgt_seq_np = sess.run(tgt_seq)
-    # print(tgt_seq_np.shape)
-    # print(tgt_seq_np)
-    # print(sess.run(tgt_mask))
-    # import sys
-    # sys.stdin.readline()
 
     hidden_size = params.hidden_size
     tvocab = params.vocabulary["target"]
@@ -419,18 +409,8 @@ def r2l_decoding_graph(features, state, mode, params):
     tgt_seq = features["target"]  # during inference, shape = []
     src_len = features["source_length"]
     tgt_len = features["target_length"]
-    tgt_seq = tf.reverse_sequence(tgt_seq, tgt_len - 1, seq_dim=1)
-    # # debug
-    # sess = tf.train.MonitoredTrainingSession()
-    # print(sess.run([tgt_seq, tgt_seq_rev, tgt_len]))
-    # tgt_seq_np = sess.run(tgt_seq)
-    # tgt_seq_rev_np = sess.run(tgt_seq_rev)
-    # print(tgt_seq_np.shape)
-    # print(tgt_seq_np)
-    # print(tgt_seq_rev_np.shape)
-    # print(tgt_seq_rev_np)
-    # import sys
-    # sys.stdin.readline()
+    if mode != 'infer':
+        tgt_seq = tf.reverse_sequence(tgt_seq, tgt_len - 1, seq_dim=1)
     src_mask = tf.sequence_mask(src_len,
                                 maxlen=tf.shape(features["source"])[1],
                                 dtype=tf.float32)
@@ -633,8 +613,10 @@ class Transformer(interface.NMTModel):
             if params.left2right and params.right2left:
                 raise ValueError("Cooperative decoder is not implemented!")
             elif params.left2right:
+                tf.logging.info("Building with l2r decoder!")
                 return l2r_decoding_fn
             elif params.right2left:
+                tf.logging.info("Building with r2l decoder!")
                 return r2l_decoding_fn
 
         return encoding_fn, decoding_fn_selector()

@@ -110,7 +110,7 @@ def default_parameters():
         # training using the saved checkpoint
         only_save_trainable=False,
         # Resource config
-        allow_growth=False
+        allow_growth=True
     )
 
     return params
@@ -422,13 +422,22 @@ def main(args):
     # params = import_params(checkpoint_dir, args.model, params)
     params = override_parameters(params, args)
 
+    # Print some important parameters for check!!!
+    print("\n=== Parameter check ===")
+    print("train_mode: %s" % params.train_mode)
+    print("checkpoint_dir: %s" % checkpoint_dir)
+    print("params.left2right: %s" % params.left2right)
+    print("params.right2left: %s" % params.right2left)
+    print("params.batch_size: %d" % params.batch_size)
+    print("\nPress ANY KEY to continue...")
+    sys.stdin.readline()
     # Export all parameters and model specific parameters
-    # export_params(checkpoint_dir, "params.json", params)
-    # export_params(
-    #     checkpoint_dir,
-    #     "%s.json" % args.model,
-    #     collect_params(params, model_cls.get_parameters())
-    # )
+    export_params(checkpoint_dir, "params.json", params)
+    export_params(
+        checkpoint_dir,
+        "%s.json" % args.model,
+        collect_params(params, model_cls.get_parameters())
+    )
 
     # Build Graph
     with tf.Graph().as_default():
@@ -510,6 +519,7 @@ def main(args):
                 ["right2left_decoder"],
                 tf.trainable_variables()
             )
+        # 2.+ Train right2left model with random initialization
         elif params.train_mode == 'r2l_only':
             if params.left2right:
                 raise ValueError("When in r2l_only TRAIN MODE, params.left2right should be FALSE!")
@@ -560,6 +570,11 @@ def main(args):
             total_size += v_size
             if v in trainable_vars_unmasked:
                 unmasked_size += v_size
+        print("\nPrint unmasked parameters and their shape!")
+        for v_name in sorted(list(trainable_vars_unmasked)):
+            v = trainable_vars_unmasked[v_name]
+            tf.logging.info("%s\tshape    %s", v.name[:2].ljust(80),
+                            str(v.shape).ljust(20))
         tf.logging.info("Total trainable variables size: %d", total_size)
         tf.logging.info("Unmasked trainable variables size: %d", unmasked_size)
         print("\nConfirm training with mode ===> %s" % params.train_mode)
@@ -620,7 +635,7 @@ def main(args):
                     lambda: eval_input_fn(eval_inputs, params),
                     lambda x: decode_target_ids(x, params),
                     checkpoint_dir,
-                    params.train_mode == 'r2l' or params.train_mode == 'r2l_only',
+                    params.train_mode == 'r2l' or params.train_mode == 'r2l_only',  # is_Reverse
                     params.is_BPE,
                     config,  # for create a chief session
                     params.keep_top_checkpoint_max,
@@ -634,7 +649,7 @@ def main(args):
                 checkpoint_dir=checkpoint_dir, hooks=train_hooks,
                 save_checkpoint_secs=None, config=config) as sess:
             # Restore pre-trained variables
-            sess.run(restore_op)
+            sess._tf_sess().run(restore_op)  # if use sess.run(...) global_step would not increase 1
             while not sess.should_stop():
                 sess._tf_sess().run(ops["zero_op"])
                 for i in range(params.update_cycle):

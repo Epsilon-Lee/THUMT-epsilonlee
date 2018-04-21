@@ -171,7 +171,15 @@ def _evaluate(eval_fn, input_fn, decode_fn, path,
 
         decoded_symbols = decode_fn(all_outputs)
         decoded_refs = [decode_fn(refs) for refs in all_refs]
+        first_refs = decoded_refs[0]  # the first reference file
         decoded_refs = [list(x) for x in zip(*decoded_refs)]
+
+        # UGLY CODE: saving the golden reference (ref should be saved only once)
+        first_refs_filepath = save_path + '-' + str(global_step) + '.golden'
+        with open(first_refs_filepath, 'w') as f:
+            for sent in first_refs:
+                sent = ' '.join(sent) + '\n'
+                f.write(sent)
 
         norm_filepath = save_path + '-' + str(global_step) + '.pred.norm'
         if is_Reverse:
@@ -199,6 +207,15 @@ def _evaluate(eval_fn, input_fn, decode_fn, path,
             for sent in f:
                 words = sent.strip().split()
                 decoded_symbols.append(words)
+
+        # Print some (5) results
+        tf.logging.info("Visualize some translation results:")
+        import random
+        N = len(first_refs)
+        sub_samples = [random.randint(0, N-1) for i in range(5)]
+        for idx in sub_samples:
+            print("%d-th PRED: %s" % (idx, " ".join(decoded_symbols[idx])))
+            print("%d-th GOLD: %s\n" % (idx, " ".join(first_refs[idx])))
 
         return bleu.bleu(decoded_symbols, decoded_refs)
 
