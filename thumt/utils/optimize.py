@@ -111,23 +111,21 @@ def create_train_op(loss, optimizer, var_list, global_step, params):
         if params.update_cycle == 1:
             zero_variables_op = tf.no_op("zero_variables")
             collect_op = tf.no_op("collect_op")
-            scale_op = tf.no_op("scale_op")
         else:
+            loss_var = tf.Variable(tf.zeros([]), name="loss/replica",
+                                   trainable=False)
             # collect
-            loss_tensor = _get_or_create_loss_variable()
             slot_variables = _replicate_variables(variables)
-            zero_variables_op = _zero_variables(slot_variables + [loss_tensor])
+            zero_variables_op = _zero_variables(slot_variables + [loss_var])
             collect_grads_op = _collect_gradients(gradients, slot_variables)
-            collect_loss_op = tf.assign_add(loss_tensor, loss)
+            collect_loss_op = tf.assign_add(loss_var, loss)
             collect_op = tf.group(collect_loss_op, collect_grads_op,
                                   name="collect_op")
             # scale
             scale = 1.0 / params.update_cycle
-            scale_grads_op = _scale_variables(slot_variables, scale)
-            scale_loss_op = _scale_variables(loss_tensor, scale)
-            scale_op = tf.group(scale_grads_op, scale_loss_op, name="scale_op")
-            gradients = slot_variables
-            loss = tf.convert_to_tensor(loss_tensor)
+            gradients = [scale * (g + s)
+                         for (g, s) in zip(gradients, slot_variables)]
+            loss = scale * (loss + loss_var)
 
         # Add summaries
         tf.summary.scalar("loss", loss)
@@ -158,7 +156,6 @@ def create_train_op(loss, optimizer, var_list, global_step, params):
         ops = {
             "zero_op": zero_variables_op,
             "collect_op": collect_op,
-            "scale_op": scale_op,
             "train_op": train_op
         }
 

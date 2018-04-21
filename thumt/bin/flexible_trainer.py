@@ -424,11 +424,13 @@ def main(args):
 
     # Print some important parameters for check!!!
     print("\n=== Parameter check ===")
-    print("train_mode: %s" % params.train_mode)
-    print("checkpoint_dir: %s" % checkpoint_dir)
-    print("params.left2right: %s" % params.left2right)
-    print("params.right2left: %s" % params.right2left)
-    print("params.batch_size: %d" % params.batch_size)
+    print("train_mode         : %s" % params.train_mode)
+    print("checkpoint_dir     : %s" % checkpoint_dir)
+    print("params.left2right  : %s" % params.left2right)
+    print("params.right2left  : %s" % params.right2left)
+    print("params.batch_size  : %d" % params.batch_size)
+    print("params.is_BPE      : %s" % params.is_BPE)
+    print("params.update_cycle: %d" % params.update_cycle)
     print("\nPress ANY KEY to continue...")
     sys.stdin.readline()
     # Export all parameters and model specific parameters
@@ -450,8 +452,9 @@ def main(args):
             )
 
         # Cache features for multiple batch update (versus one batch per update)
+        update_cycle = params.update_cycle
         features, init_op = cache.cache_features(features,
-                                                 params.update_cycle)
+                                                 update_cycle)
 
         # Build model
         initializer = get_initializer(params)
@@ -467,6 +470,7 @@ def main(args):
 
         # Create global step
         global_step = tf.train.get_or_create_global_step()
+
         # Create learning rate decay strategy
         learning_rate = get_learning_rate_decay(params.learning_rate,
                                                 global_step, params)
@@ -571,9 +575,10 @@ def main(args):
             if v in trainable_vars_unmasked:
                 unmasked_size += v_size
         print("\nPrint unmasked parameters and their shape!")
-        for v_name in sorted(list(trainable_vars_unmasked)):
-            v = trainable_vars_unmasked[v_name]
-            tf.logging.info("%s\tshape    %s", v.name[:2].ljust(80),
+        unmasked_weights = {v.name: v for v in trainable_vars_unmasked}
+        for v_name in sorted(list(unmasked_weights)):
+            v = unmasked_weights[v_name]
+            tf.logging.info("%s\tshape    %s", v.name[:-2].ljust(80),
                             str(v.shape).ljust(20))
         tf.logging.info("Total trainable variables size: %d", total_size)
         tf.logging.info("Unmasked trainable variables size: %d", unmasked_size)
@@ -605,6 +610,7 @@ def main(args):
             sharded=False
         )
         tf.add_to_collection(tf.GraphKeys.SAVERS, saver)
+        multiplier = tf.convert_to_tensor([update_cycle, 1])
 
         train_hooks = [
             tf.train.StopAtStepHook(last_step=params.train_steps),
@@ -613,6 +619,8 @@ def main(args):
                 {
                     "step": global_step,
                     "loss": loss,
+                    "source": tf.shape(features["source"]) * multiplier,
+                    "target": tf.shape(features["target"]) * multiplier
                 },
                 every_n_iter=50
             ),
@@ -650,9 +658,10 @@ def main(args):
                 save_checkpoint_secs=None, config=config) as sess:
             # Restore pre-trained variables
             sess._tf_sess().run(restore_op)  # if use sess.run(...) global_step would not increase 1
+
             while not sess.should_stop():
-                sess._tf_sess().run(ops["zero_op"])
-                for i in range(params.update_cycle):
+                sess._tf_sess().run([init_op, ops["zero_op"]])
+                for i in range(params.update_cycle - 1):
                     sess._tf_sess().run(ops["collect_op"])
                 sess.run(ops["train_op"])
 
